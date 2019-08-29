@@ -1,14 +1,10 @@
 #include "jpeg.h"
-
 #include <jpeglib.h>
 
 #include <fstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
-
-// SİLİNECEK
-#include <iostream>
 
 namespace marengo
 {
@@ -167,26 +163,6 @@ void Image::save( const std::string& fileName, int quality ) const
     fclose( outfile );
 }
 
-void Image::savePpm( const std::string& fileName ) const
-{
-    std::ofstream ofs( fileName, std::ios::out | std::ios::binary );
-    if ( ! ofs )
-    {
-        throw std::runtime_error(
-            "Could not open " + fileName + " for saving"
-            );
-    }
-    // Write the header
-    ofs << "P6 " << m_width << " " << m_height << " 255\n";
-    for ( auto& v : m_bitmapData )
-    {
-        ofs.write( reinterpret_cast<const char *>(v.data()), v.size() );
-    }
-    ofs.close();
-}
-
-
-
 std::vector<uint8_t> Image::getPixel( size_t x, size_t y ) const
 {
     if ( y >= m_bitmapData.size() )
@@ -212,7 +188,7 @@ void Image::transform( std::vector<std::vector<std::vector<int>>> newImage )
             new_d = newImage[0][0].size();
 
     std::vector<std::vector<uint8_t>> newBitmap(new_y, std::vector<uint8_t>(new_x * new_d, 0));
-    std::cout << "new_x: " << unsigned(new_x) << " " << "new_y: " << unsigned(new_y) << " " << "new_d: " << unsigned(new_d) << std::endl; 
+
     size_t i, j, k;
     for(j = 0; j < new_y; j++)
     {
@@ -229,171 +205,6 @@ void Image::transform( std::vector<std::vector<std::vector<int>>> newImage )
     m_height = m_bitmapData.size();
     m_width = m_bitmapData[0].size() / m_pixelSize;
 }
-
-uint8_t Image::getLuminance( size_t x, size_t y ) const
-{
-    auto vec = getPixel( x, y );
-    if ( vec.size() == 1 )
-    {   // monochrome image
-        return vec[0];
-    }
-    if ( vec.size() == 3 )
-    {
-        // fast approximation of luminance:
-        return static_cast<uint8_t>(
-            ( vec[0] * 2 + vec[1] * 3 + vec[2] ) / 6
-            );
-    }
-    return 0;
-}
-
-std::vector<uint8_t>
-Image::getAverage( size_t x, size_t y, size_t boxSize ) const
-{
-    if ( boxSize > m_width )
-    {
-        throw std::out_of_range( "Box size is greater than image width" );
-    }
-    if ( boxSize > m_height )
-    {
-        throw std::out_of_range( "Box size is greater than image height" );
-    }
-    if ( x + boxSize  >= m_width )
-    {
-        x = m_width - boxSize;
-    }
-    if ( y + boxSize >= m_height )
-    {
-        y = m_height - boxSize;
-    }
-    // running totals
-    size_t r{ 0 }; // we just use this one for mono images
-    size_t g{ 0 };
-    size_t b{ 0 };
-    for ( size_t row = y; row < y + boxSize; ++row )
-    {
-        for ( size_t col = x; col < x + boxSize; ++col )
-        {
-            auto vec = getPixel( col, row );
-            r += vec[0];
-            if ( vec.size() == 3 )
-            {
-                g += vec[1];
-                b += vec[2];
-            }
-        }
-    }
-    std::vector<uint8_t> retVec;
-    r /= ( boxSize * boxSize );
-    retVec.push_back( r );
-    if ( m_pixelSize == 3 )
-    {
-        g /= ( boxSize * boxSize );
-        retVec.push_back( g );
-        b /= ( boxSize * boxSize );
-        retVec.push_back( b );
-    }
-    return retVec;
-}
-
-void Image::shrink( size_t newWidth )
-{
-    if ( newWidth >= m_width )
-    {
-        return;
-    }
-
-    if ( newWidth == 0 )
-    {
-        throw std::out_of_range( "New width cannot be zero" );
-    }
-
-    // We process the original bitmap line by line rather than
-    // calling getAverage() on every (new) pixel to ensure we make the
-    // most of data already in existing cache lines & attempt to
-    // allow branch prediction to work optimally. This has resulted
-    // in a three-times speedup when shrinking a 21Mpx file.
-
-    float scaleFactor = static_cast<float>(newWidth) / m_width;
-    size_t newHeight = scaleFactor * m_height;
-    std::vector<std::vector<uint8_t>> vecNewBitmap;
-    vecNewBitmap.reserve( newHeight );
-
-    // Yes, I probably could do a rolling average
-    std::vector<size_t> runningTotals( newWidth * m_pixelSize );
-    std::vector<size_t> runningCounts( newWidth * m_pixelSize );
-    size_t oldRow = 0;
-    for ( size_t row = 0; row < m_height; ++row )
-    {
-        for ( size_t col = 0; col < m_width * m_pixelSize; ++col )
-        {
-            size_t idx = scaleFactor * col;
-            runningTotals[ idx ] += m_bitmapData[row][col];
-            ++runningCounts[ idx ];
-        }
-        if ( static_cast<size_t>( scaleFactor * row ) > oldRow )
-        {
-            oldRow = scaleFactor * row;
-            std::vector<uint8_t> newLine;
-            newLine.reserve( newWidth * m_pixelSize );
-            for ( size_t i = 0; i < newWidth * m_pixelSize; ++i )
-            {
-                newLine.push_back( runningTotals[i] / runningCounts[i] );
-                runningTotals[i] = 0;
-                runningCounts[i] = 0;
-            }
-            vecNewBitmap.push_back( newLine );
-        }
-    }
-    m_bitmapData = vecNewBitmap;
-    m_height = m_bitmapData.size();
-    m_width = m_bitmapData[0].size() / m_pixelSize;
-}
-
-void Image::expand( size_t newWidth )
-{
-    if ( newWidth <= m_width )
-    {
-        return;
-    }
-
-    float scaleFactor = static_cast<float>(newWidth) / m_width;
-    size_t newHeight = scaleFactor * m_height;
-    std::vector<std::vector<uint8_t>> vecNewBitmap;
-    vecNewBitmap.reserve( newHeight );
-
-    for ( size_t row = 0; row < newHeight; ++row )
-    {
-        size_t oldRow = row / scaleFactor;
-        std::vector<uint8_t> vecNewLine( newWidth * m_pixelSize );
-        for ( size_t col = 0; col < newWidth; ++col )
-        {
-            size_t oldCol = col / scaleFactor;
-            for ( size_t n = 0; n < m_pixelSize; ++n )
-            {
-                vecNewLine[ col * m_pixelSize + n ] =
-                    m_bitmapData[ oldRow ][ oldCol * m_pixelSize + n ];
-            }
-        }
-        vecNewBitmap.push_back( vecNewLine );
-    }
-    m_bitmapData = vecNewBitmap;
-    m_height = m_bitmapData.size();
-    m_width = m_bitmapData[0].size() / m_pixelSize;
-}
-
-void Image::resize( size_t newWidth )
-{
-    if ( newWidth < m_width )
-    {
-        shrink( newWidth );
-    }
-    else if ( newWidth > m_width )
-    {
-        expand( newWidth );
-    }
-}
-
 
 } // namespace jpeg
 } // namespace marengo
